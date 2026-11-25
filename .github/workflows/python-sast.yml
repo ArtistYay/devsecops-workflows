@@ -1,0 +1,66 @@
+name: Python SAST
+
+on:
+  workflow_call:
+    inputs:
+      source_dir:
+        description: Folder Bandit scans
+        type: string
+        default: "."
+      run_tests:
+        description: Install requirements and run pytest
+        type: boolean
+        default: false
+      requirements:
+        description: Requirements files for the tests, space separated
+        type: string
+        default: "requirements.txt"
+      python_version:
+        description: Python version on the runner
+        type: string
+        default: "3.12"
+
+permissions:
+  contents: read
+
+jobs:
+  bandit:
+    name: Bandit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The venv lives outside the repo folder, so Bandit never scans installed packages.
+      - name: Install Bandit
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir bandit==1.9.4
+
+      # -ll = report medium and high severity. Any finding fails the job.
+      # Inputs go in through env, never pasted into the script (avoids script injection).
+      - name: Bandit
+        env:
+          SOURCE_DIR: ${{ inputs.source_dir }}
+        run: '"$RUNNER_TEMP/venv/bin/bandit" -r "$SOURCE_DIR" -ll'
+
+  tests:
+    name: Unit tests
+    if: inputs.run_tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install dependencies
+        env:
+          REQUIREMENTS: ${{ inputs.requirements }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          for f in $REQUIREMENTS; do
+            "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir -r "$f"
+          done
+          "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir pytest
+
+      - name: pytest
+        run: '"$RUNNER_TEMP/venv/bin/python" -m pytest -q'

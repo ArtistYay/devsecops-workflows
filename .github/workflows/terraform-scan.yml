@@ -1,0 +1,88 @@
+name: Terraform scan
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: Folder with the root Terraform module
+        type: string
+        default: "."
+      terraform_version:
+        type: string
+        default: "1.17.2"
+      var_file:
+        description: tfvars file for Checkov, relative to working_directory ("" = none)
+        type: string
+        default: ""
+      tflint_config:
+        description: tflint config path from the repo root ("" = skip tflint)
+        type: string
+        default: ""
+      checkov_frameworks:
+        description: Checkov frameworks, space separated
+        type: string
+        default: "terraform"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Lint and scan IaC
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      # -backend=false: no state, no cloud login. Modules still download from GitHub.
+      - name: Terraform validate
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate -no-color
+
+      - name: Install tflint
+        if: inputs.tflint_config != ''
+        uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.66.0
+
+      - name: tflint
+        if: inputs.tflint_config != ''
+        run: |
+          tflint --init --config "$GITHUB_WORKSPACE/$TFLINT_CONFIG"
+          tflint --recursive --config "$GITHUB_WORKSPACE/$TFLINT_CONFIG" --format compact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TFLINT_CONFIG: ${{ inputs.tflint_config }}
+
+      # Same Checkov version as the pre-commit hooks, so local and CI results match.
+      # Installed with pip (not the Checkov action) so several frameworks can be passed.
+      - name: Install Checkov
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --no-cache-dir checkov==3.4.11
+
+      # Inputs go in through env, never pasted into the script (avoids script injection).
+      - name: Checkov
+        env:
+          FRAMEWORKS: ${{ inputs.checkov_frameworks }}
+          VAR_FILE: ${{ inputs.var_file }}
+        run: |
+          read -ra fw <<< "$FRAMEWORKS"
+          args=(-d . --framework "${fw[@]}" --quiet --compact)
+          if [ -n "$VAR_FILE" ]; then
+            args+=(--var-file "$VAR_FILE")
+          fi
+          "$RUNNER_TEMP/venv/bin/checkov" "${args[@]}"
